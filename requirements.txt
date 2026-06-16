@@ -1,0 +1,8 @@
+langgraph==0.2.53
+langchain==0.2.16
+langchain-core==0.2.43
+langchain-community==0.2.16
+oracledb==2.4.0
+python-dotenv==1.0.0
+pydantic==2.13.4
+colorama==0.4.6

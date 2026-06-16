@@ -1,0 +1,24 @@
+# Чувствительные данные
+.env
+
+# Логи
+terminal_logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Виртуальное окружение
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
