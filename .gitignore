@@ -1,6 +1,8 @@
 # Чувствительные данные
 .env
 
+reset_and_create.py
+
 # Логи
 terminal_logs/
 

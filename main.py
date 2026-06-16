@@ -42,7 +42,6 @@ class Init:
     """Запись логов в файл."""
     @staticmethod
     async def write_log(log_file: str, log_entry: dict):
-
         try:
             with open(log_file, "w", encoding='utf-8') as f:
                 f.write(json.dumps(log_entry, ensure_ascii=False, indent=2))
@@ -65,7 +64,6 @@ class Init:
 
     """Сохранение логов LLM в файл"""
     def llm_logs(self, prompt: str, response: str, decision_type: str, elapsed: float):
-        save_logs = True
         log_entry = {
             "timestamp": datetime.now().isoformat(),
             "type": decision_type,
@@ -74,13 +72,12 @@ class Init:
             "elapsed_time": elapsed,
             "model": os.getenv("OLLAMA_MODEL"),
         }
-        if save_logs:
-            safe_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-            log_file = os.path.join(self.log_dir, f"llm_{safe_timestamp}.json")
-            asyncio.run_coroutine_threadsafe(
-                self.write_log(log_file, log_entry),
-                self.loop
-            )
+        safe_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        log_file = os.path.join(self.log_dir, f"llm_{safe_timestamp}.json")
+        asyncio.run_coroutine_threadsafe(
+            self.write_log(log_file, log_entry),
+            self.loop
+        )
 
     """Подключение к БД """
     def db_connect(self, username: str, password: str, 
@@ -178,8 +175,6 @@ class Init:
             return False
 
 
-
-
 """Класс для работы с БД, все необходимые для этого инструменты"""
 class DB_Tools:
     def __init__(self, init: Init):
@@ -230,7 +225,7 @@ class DB_Tools:
         output = f"Найдено {len(rows)} строк(а/и):\n"
         output += " | ".join(columns) + "\n"
         output += "-" * 50 + "\n"
-        for row in rows[:10]:  # Ограничиваем 10 строками
+        for row in rows[:10]:
             output += " | ".join(str(cell) for cell in row) + "\n"
         if len(rows) > 10:
             output += f"... и еще {len(rows) - 10} строк"
@@ -244,7 +239,6 @@ class DB_Tools:
         def execute_sql(sql: str) -> str:
             """Выполняет SQL запрос в Oracle Database и возвращает результат."""
             result = db_tools.execute(sql)
-
             if result["status"]:
                 if result["type"] == "select":
                     if len(result["rows"]) == 0:
@@ -284,17 +278,14 @@ class DB_Tools:
                 "ROLE": "dba_roles",
                 "TABLE": "all_tables"
             }
-
             view = type_map.get(object_type.upper())
             if not view:
                 return f"Неизвестный тип объекта: {object_type}"
             sql = f"SELECT COUNT(*) FROM {view} WHERE {object_type.lower()}_name = '{object_name.upper()}'"
             result = db_tools.execute(sql)
-
             if result["status"] and result["rows"]:
                 exists = result["rows"][0][0] > 0
                 return f"Объект {object_name} ({object_type}) {'существует' if exists else 'не существует'}"
-
             return f"Не удалось проверить существование {object_name}"
 
         @tool
@@ -302,65 +293,307 @@ class DB_Tools:
             """Извлекает учетные данные из указанной таблицы."""
             sql = f"SELECT * FROM {table_name}"
             result = db_tools.execute(sql)
-
             if result["status"] and result["rows"]:
                 creds = []
                 for row in result["rows"]:
                     creds.append(f"username: {row[0]}, password: {row[1]}")
                 return f"Найдены учетные данные:\n" + "\n".join(creds)
-
             return f"Не удалось найти учетные данные в таблице {table_name}"
 
-       
+        @tool
+        def get_password_from_credentials(username: str) -> str:
+            """Получает пароль пользователя из таблицы credentials."""
+            schemas = ["", "COMPROMISED_USER", "CTF_STUDENT", "SYSTEM"]
+            queries = []
+            for schema in schemas:
+                if schema:
+                    queries.append(f"SELECT password FROM {schema}.credentials WHERE username = '{username}'")
+                else:
+                    queries.append(f"SELECT password FROM credentials WHERE username = '{username}'")
+            
+            for query in queries:
+                try:
+                    result = db_tools.execute(query)
+                    if result["status"] and result["rows"]:
+                        password = result["rows"][0][0]
+                        db_tools.logger.info(f"Найден пароль для {username}: {password}")
+                        return password
+                except:
+                    continue
+            
+            db_tools.logger.warning(f"Пароль для {username} не найден, используем дефолтный")
+            return f"{username.lower()}_pass"
+
+        @tool
+        def unlock_and_login(username: str) -> str:
+            """Разблокирует пользователя и выполняет вход под ним."""
+            result = db_tools.execute(f"ALTER USER {username} ACCOUNT UNLOCK")
+            if not result["status"]:
+                return f"Не удалось разблокировать {username}: {result['message']}"
+            
+            password = get_password_from_credentials(username)
+            if not password:
+                return f"Не найден пароль для {username}"
+            
+            result = db_tools.init.switch_user(username, password)
+            if result["status"]:
+                return f"Разблокирован и вошел как {username}"
+            else:
+                return f"Ошибка входа: {result['message']}"
+
+        @tool
+        def execute_plsql(plsql: str) -> str:
+            """Выполняет PL/SQL блок."""
+            result = db_tools.execute(plsql)
+            if result["status"]:
+                return f"PL/SQL выполнен успешно. Затронуто {result.get('row_count', 0)} строк"
+            else:
+                return f"Ошибка: {result['message']}"
+
+        @tool
+        def describe_object(object_name: str, object_type: str = "TABLE") -> str:
+            """Описывает структуру объекта."""
+            if object_type.upper() == "TABLE":
+                result = db_tools.execute(f"SELECT column_name, data_type, nullable FROM all_tab_columns WHERE table_name = '{object_name.upper()}'")
+            elif object_type.upper() == "VIEW":
+                result = db_tools.execute(f"SELECT text FROM all_views WHERE view_name = '{object_name.upper()}'")
+            else:
+                return f"Неизвестный тип объекта: {object_type}"
+            
+            if result["status"] and result["rows"]:
+                return db_tools.format_for_llm(result)
+            else:
+                return f"Объект {object_name} не найден"
+
+
+        @tool
+        def list_tables(schema_name: Optional[str] = None) -> str:
+            """Выводит список таблиц в указанной схеме."""
+            if schema_name:
+                sql = f"SELECT table_name FROM all_tables WHERE owner = '{schema_name.upper()}'"
+            else:
+                sql = "SELECT owner, table_name FROM all_tables WHERE owner NOT IN ('SYS', 'SYSTEM', 'DBSNMP', 'XDB')"
+            
+            result = db_tools.execute(sql)
+            if result["status"] and result["rows"]:
+                return db_tools.format_for_llm(result)
+            else:
+                return "Таблицы не найдены"
+
+        @tool
+        def search_data(pattern: str) -> str:
+            """Ищет данные по паттерну во всех таблицах."""
+            found = []
+            tables = db_tools.execute("SELECT owner, table_name FROM all_tables WHERE owner NOT IN ('SYS', 'SYSTEM', 'DBSNMP')")
+            if not tables["status"]:
+                return "Не удалось получить список таблиц"
+            
+            for owner, table in tables["rows"]:
+                try:
+                    result = db_tools.execute(f"SELECT * FROM {owner}.{table} WHERE ROWNUM <= 100")
+                    if result["status"] and result["rows"]:
+                        for row in result["rows"]:
+                            for cell in row:
+                                if isinstance(cell, str) and pattern.upper() in cell.upper():
+                                    found.append(f"{owner}.{table}: {cell[:100]}")
+                                    break
+                            if found:
+                                break
+                except:
+                    continue
+            
+            if found:
+                return "Найдено:\n" + "\n".join(found[:10])
+            else:
+                return f"Паттерн '{pattern}' не найден"
+
         @tool
         def get_ctf_flag() -> str:
-            """Получает CTF флаг из БД. Пробует стандартный маршрут и обходной поиск."""
-            # Попытка 1: Стандартный маршрут
-            db_tools.execute("SET ROLE CTF_ROLE IDENTIFIED BY ctf_role")
-            result = db_tools.execute("SELECT * FROM CTF.CTF_FLAG")
-            if result["status"] and result["rows"]:
-                flag = result["rows"][0][0]
-                output = f"🏆 Флаг получен: {flag}\n"
-                output += "=" * 50 + "\n"
-                output += "Маршрут: стандартный (SET ROLE CTF_ROLE + CTF.CTF_FLAG)"
-                return output
-
-            # Попытка 2: Автоматический поиск
-            search_result = db_tools.execute("SELECT table_name FROM all_tables WHERE table_name LIKE '%FLAG%' OR table_name LIKE '%CTF%'")
-            if search_result["status"] and search_result["rows"]:
-                for row in search_result["rows"]:
-                    table_name = row[0]
-                    db_tools.execute("SET ROLE CTF_ROLE IDENTIFIED BY ctf_role")
-                    result = db_tools.execute(f"SELECT * FROM {table_name}")
-
+            """Универсальный поиск CTF флага."""
+            import re
+            logger = db_tools.logger
+            logger.info("Поиск CTF флага...")
+            
+            # ШАГ 0: Переключаемся на system
+            try:
+                sys_user = os.getenv("ORACLE_SYS_USER", "system")
+                sys_pass = os.getenv("ORACLE_SYS_PASSWORD")
+                if sys_pass:
+                    db_tools.init.switch_user(sys_user, sys_pass)
+                    logger.info(f"Подключены как {sys_user}")
+            except Exception as e:
+                logger.warning(f"Не удалось переключиться на system: {e}")
+            
+            # ШАГ 1: Получаем пароль из credentials
+            compromised_user = None
+            compromised_pass = None
+            
+            schemas = ["", "COMPROMISED_USER", "CTF_STUDENT"]
+            for schema in schemas:
+                try:
+                    table_name = f"{schema}.credentials" if schema else "credentials"
+                    creds_result = db_tools.execute(f"SELECT username, password FROM {table_name}")
+                    if creds_result["status"] and creds_result["rows"]:
+                        for username, password in creds_result["rows"]:
+                            if "COMPROMISED" in username.upper():
+                                compromised_user = username
+                                compromised_pass = password
+                                logger.info(f"Найден пароль для {username}")
+                                break
+                            if "CTF_STUDENT" in username.upper():
+                                compromised_user = username
+                                compromised_pass = password
+                                logger.info(f"Найден пароль для {username}")
+                                break
+                    if compromised_pass:
+                        break
+                except:
+                    continue
+            
+            # ШАГ 2: Переключаемся
+            if compromised_user and compromised_pass:
+                try:
+                    db_tools.init.switch_user(compromised_user, compromised_pass)
+                    logger.info(f"Переключились на {compromised_user}")
+                except Exception as e:
+                    logger.warning(f"Не удалось переключиться: {e}")
+            
+            flag = None
+            source = None
+            
+            # ШАГ 3: Стандартный путь через CTF_ROLE
+            try:
+                db_tools.execute("SET ROLE CTF_ROLE IDENTIFIED BY ctf_role")
+                result = db_tools.execute("SELECT * FROM CTF.CTF_FLAG")
+                if result["status"] and result["rows"]:
+                    row = result["rows"][0]
+                    if len(row) >= 2:
+                        flag = str(row[1])
+                    else:
+                        flag = str(row[0])
+                    source = "CTF.CTF_FLAG (через CTF_ROLE)"
+                    logger.info(f"Флаг найден в {source}")
+            except Exception as e:
+                logger.debug(f"Стандартный путь: {e}")
+            
+            # ШАГ 4: Поиск по имени столбца flag_value
+            if not flag:
+                try:
+                    result = db_tools.execute("SELECT flag_value FROM CTF.CTF_FLAG")
                     if result["status"] and result["rows"]:
-                        flag = result["rows"][0][0]
-                        output = f"Флаг получен: {flag}\n"
-                        output += "-" * 50 + "\n"
-                        output += f"Маршрут: обходной (найден в таблице {table_name})"
-                        output += "-" * 50 + "\n"
-                        output += "Флаг находится в нестандартном месте, доебаться до препода)))"
-                        return output
+                        flag = str(result["rows"][0][0])
+                        source = "CTF.CTF_FLAG.flag_value"
+                        logger.info(f"Флаг найден в {source}")
+                except Exception as e:
+                    logger.debug(f"Поиск flag_value: {e}")
+            
+            # ШАГ 5: Поиск по таблицам с FLAG в имени
+            if not flag:
+                try:
+                    tables = db_tools.execute("""
+                        SELECT owner, table_name 
+                        FROM all_tables 
+                        WHERE UPPER(table_name) LIKE '%FLAG%' 
+                        AND owner NOT IN ('SYS', 'SYSTEM', 'DBSNMP')
+                    """)
+                    if tables["status"] and tables["rows"]:
+                        for owner, table in tables["rows"]:
+                            try:
+                                result = db_tools.execute(f"SELECT * FROM {owner}.{table}")
+                                if result["status"] and result["rows"]:
+                                    for row in result["rows"]:
+                                        for cell in row:
+                                            if isinstance(cell, str):
+                                                if re.search(r'(flag\{|ctf\{)', cell, re.IGNORECASE):
+                                                    flag = cell
+                                                    source = f"{owner}.{table}"
+                                                    break
+                                                if re.search(r'^\d{5,}$', cell):
+                                                    flag = cell
+                                                    source = f"{owner}.{table}"
+                                                    break
+                                        if flag:
+                                            break
+                                if flag:
+                                    break
+                            except:
+                                continue
+                        if flag:
+                            logger.info(f"Флаг найден в {source}")
+                except Exception as e:
+                    logger.debug(f"Поиск по таблицам: {e}")
+            
+            # ШАГ 6: Поиск через пакет flag_manager
+            if not flag:
+                try:
+                    result = db_tools.execute("SELECT CTF_ADMIN.flag_manager.get_flag() FROM DUAL")
+                    if result["status"] and result["rows"]:
+                        flag = str(result["rows"][0][0])
+                        source = "CTF_ADMIN.flag_manager.get_flag()"
+                        logger.info(f"Флаг найден через пакет")
+                except Exception as e:
+                    logger.debug(f"Пакет flag_manager: {e}")
+            
+            # ШАГ 7: Поиск через system_config
+            if not flag:
+                try:
+                    result = db_tools.execute("SELECT config_value FROM CTF_ADMIN.system_config WHERE config_key = 'FLAG_HIDDEN'")
+                    if result["status"] and result["rows"]:
+                        flag = str(result["rows"][0][0])
+                        source = "CTF_ADMIN.system_config.FLAG_HIDDEN"
+                        logger.info(f"Флаг найден в system_config")
+                except Exception as e:
+                    logger.debug(f"system_config: {e}")
+            
+            # ШАГ 8: Поиск по всем данным (последняя надежда)
+            if not flag:
+                try:
+                    # Ищем в метаданных
+                    queries = [
+                        "SELECT text FROM all_source WHERE UPPER(text) LIKE '%FLAG%' AND ROWNUM <= 10",
+                        "SELECT comments FROM all_tab_comments WHERE UPPER(comments) LIKE '%FLAG%' AND ROWNUM <= 10"
+                    ]
+                    for query in queries:
+                        try:
+                            result = db_tools.execute(query)
+                            if result["status"] and result["rows"]:
+                                for row in result["rows"]:
+                                    if row and isinstance(row[0], str):
+                                        flag_match = re.search(r'(flag\{[^}]+\}|ctf\{[^}]+\})', row[0], re.IGNORECASE)
+                                        if flag_match:
+                                            flag = flag_match.group(0)
+                                            source = "Метаданные"
+                                            logger.info(f"Флаг найден в метаданных")
+                                            break
+                                if flag:
+                                    break
+                        except:
+                            continue
+                except:
+                    pass
+            
+            if flag:
+                if re.search(r'^\d+$', str(flag)):
+                    flag = f"flag{{{flag}}}"
+                
+                return f" Флаг получен {flag} Источник: {source}"
+            
+            logger.error("Флаг не найден")
+            return "Флаг не найден"
 
-            return "Не удалось получить флаг ни одним способом."
-
-       
         @tool
         def init_sys_connection() -> str:
             """Подключается к системному аккаунту БД через данные из .env."""
             sys_user = os.getenv("ORACLE_SYS_USER")
             sys_password = os.getenv("ORACLE_SYS_PASSWORD")
-
             if not sys_user or not sys_password:
                 return "Ошибка: ORACLE_SYS_USER или ORACLE_SYS_PASSWORD не найдены в .env"
-
             result = db_tools.init.switch_user(sys_user, sys_password)
             if result["status"]:
                 return f"Подключен к системному аккаунту: {sys_user}"
             else:
                 return f"Ошибка подключения: {result['message']}"
 
-        """Разблокировать пользователя"""
         @tool
         def unlock_user(username: str) -> str:
             """Разблокирует указанного пользователя БД."""
@@ -376,6 +609,12 @@ class DB_Tools:
             get_current_user,
             check_object_exists,
             extract_credentials_from_table,
+            get_password_from_credentials,
+            unlock_and_login,
+            execute_plsql,
+            describe_object,
+            list_tables,
+            search_data,
             get_ctf_flag,
             init_sys_connection,
             unlock_user,
@@ -388,7 +627,6 @@ class LLM_Tools:
         self.db_tools = db_tools
         self.tool_dict = {tool.name: tool for tool in db_tools.get_tools()}
 
-
         self.use_llm = use_llm
         self.save_logs = save_logs
         self.recreate = recreate
@@ -397,7 +635,7 @@ class LLM_Tools:
         self.timeout = init.timeout
 
         self.logger = init.logger
-        self.log_dir = init.log_dir # Посмотреть понадобиться или нет
+        self.log_dir = init.log_dir
 
         self.llm_conversations = []
         self.results = []
@@ -445,11 +683,7 @@ class LLM_Tools:
             
             if is_error:
                 already_exists_codes = [
-                    "ORA-01543",  # табличное пространство уже существует
-                    "ORA-01920",  # пользователь уже существует
-                    "ORA-01921",  # роль уже существует
-                    "ORA-02379",  # профиль уже существует
-                    "ORA-00955",  # объект уже существует
+                    "ORA-01543", "ORA-01920", "ORA-01921", "ORA-02379", "ORA-00955"
                 ]
                 
                 if skip_if_exists and (
@@ -485,7 +719,7 @@ class LLM_Tools:
             self.logger.error(f"Ошибка переключения на {username}: {e}")
             return False    
 
-    """Преобразование длинного текста задания в короткий план задания в формате JSON"""
+    """Расширенный парсинг задания с поддержкой всех объектов"""
     def parse_task(self, task_description: str) -> Optional[Dict[str, Any]]:
         prompt = f"""Ты эксперт по Oracle Database. Проанализируй задание и верни JSON план.
 
@@ -549,10 +783,110 @@ class LLM_Tools:
         try:
             json_match = re.search(r'\{.*\}', response, re.DOTALL) 
             if json_match:
-                return json.loads(json_match.group())
+                plan = json.loads(json_match.group())
+                # Дополнительный парсинг таблиц, секвенс и т.д.
+                plan = self._parse_additional_objects(task_description, plan)
+                return plan
         except Exception as e:
             self.logger.error(f"Ошибка парсинга JSON: {e}")
         return self.create_default_plan(task_description)
+    
+    def _parse_additional_objects(self, task_description: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+        """Парсит таблицы, секвенсы, представления, процедуры и триггеры из текста задания"""
+        
+        # Парсинг таблиц
+        tables = plan.get("tables", [])
+        create_table_pattern = r"CREATE\s+TABLE\s+(?:(\w+)\.)?(\w+)\s*\(([^)]+)\)"
+        matches = re.findall(create_table_pattern, task_description, re.IGNORECASE | re.DOTALL)
+        
+        for schema, table_name, columns_def in matches:
+            columns = []
+            constraints = []
+            
+            for col in columns_def.split(','):
+                col = col.strip()
+                if not col:
+                    continue
+                if any(keyword in col.upper() for keyword in ['PRIMARY KEY', 'FOREIGN KEY', 'UNIQUE', 'CHECK', 'CONSTRAINT']):
+                    constraints.append(col)
+                else:
+                    parts = col.split()
+                    col_name = parts[0]
+                    col_type = ' '.join(parts[1:]) if len(parts) > 1 else 'VARCHAR2(100)'
+                    
+                    default_match = re.search(r"DEFAULT\s+([^\s,]+)", col, re.IGNORECASE)
+                    default_value = default_match.group(1) if default_match else None
+                    is_not_null = 'NOT NULL' in col.upper()
+                    
+                    columns.append({
+                        "name": col_name,
+                        "type": col_type,
+                        "default": default_value,
+                        "not_null": is_not_null
+                    })
+            
+            tables.append({
+                "owner": schema if schema else "CTF_STUDENT",
+                "name": table_name,
+                "columns": columns,
+                "constraints": constraints
+            })
+        plan["tables"] = tables
+        
+        # Парсинг секвенс
+        sequences = plan.get("sequences", [])
+        seq_pattern = r"CREATE\s+SEQUENCE\s+(\w+)\s+START\s+WITH\s+(\d+)(?:\s+INCREMENT\s+BY\s+(\d+))?"
+        matches = re.findall(seq_pattern, task_description, re.IGNORECASE)
+        for seq_name, start_val, increment in matches:
+            sequences.append({
+                "name": seq_name,
+                "start": int(start_val),
+                "increment": int(increment) if increment else 1,
+                "owner": "CTF_STUDENT"
+            })
+        plan["sequences"] = sequences
+        
+        # Парсинг представлений
+        views = plan.get("views", [])
+        view_pattern = r"CREATE\s+VIEW\s+(\w+)\s+AS\s+SELECT\s+([^;]+)"
+        matches = re.findall(view_pattern, task_description, re.IGNORECASE | re.DOTALL)
+        for view_name, view_query in matches:
+            views.append({
+                "name": view_name,
+                "query": f"SELECT {view_query}",
+                "owner": "CTF_STUDENT"
+            })
+        plan["views"] = views
+        
+        # Парсинг процедур
+        procedures = plan.get("procedures", [])
+        proc_pattern = r"CREATE\s+PROCEDURE\s+(\w+)\s*\(([^)]*)\)\s+AS\s+([^;]+)"
+        matches = re.findall(proc_pattern, task_description, re.IGNORECASE | re.DOTALL)
+        for proc_name, params, body in matches:
+            procedures.append({
+                "name": proc_name,
+                "params": params.strip() if params else "",
+                "body": body.strip(),
+                "owner": "CTF_STUDENT"
+            })
+        plan["procedures"] = procedures
+        
+        # Парсинг триггеров
+        triggers = plan.get("triggers", [])
+        trig_pattern = r"CREATE\s+TRIGGER\s+(\w+)\s+(BEFORE|AFTER)\s+(\w+)\s+ON\s+(\w+)\s+FOR\s+EACH\s+ROW\s+(?:BEGIN\s+)?([^;]+)"
+        matches = re.findall(trig_pattern, task_description, re.IGNORECASE | re.DOTALL)
+        for trig_name, timing, event, table, body in matches:
+            triggers.append({
+                "name": trig_name,
+                "timing": timing.upper(),
+                "event": event.upper(),
+                "table": table,
+                "body": body.strip(),
+                "owner": "CTF_STUDENT"
+            })
+        plan["triggers"] = triggers
+        
+        return plan
     
     """Fallback для создания базового плана, если LLM не смогла распарсить задание"""
     def create_default_plan(self, task_description: str) -> Dict[str, Any]:
@@ -560,7 +894,6 @@ class LLM_Tools:
         size_match = re.search(r'(\d+)\s*мб', task_lower)
         ts_size = int(size_match.group(1)) if size_match else 150
         
-        # Извлекаем количество пользователей
         users: List[Dict[str, Any]] = []
         user_matches = re.findall(r'([A-Z_]+)\s*\((\d+)\s*мб\)', task_description)
         for name, quota in user_matches:
@@ -588,10 +921,9 @@ class LLM_Tools:
         if not config:
             return 
         name = config.get("name", "MEGA_TS")
-        size_mb = config.get("size_mb", 150) #тут
+        size_mb = config.get("size_mb", 150)
         max_size = config.get("autoextend_max_mb", 5120)
         sql = f"CREATE TABLESPACE {name} DATAFILE '{name.lower()}.dbf' SIZE {size_mb}M AUTOEXTEND ON NEXT 10M MAXSIZE {max_size}M"
-
         if self.execute_sql(f"Tablespace {name}", sql):
             self.stats["tablespaces"] += 1
 
@@ -635,38 +967,44 @@ class LLM_Tools:
                     if role_name:
                         self.execute_sql(f"Grant role to {name}", f"GRANT {role_name} TO {name}")
     
-
     """Обертка для создания таблиц"""
     def create_tables(self, tables: List[Dict[str, Any]]) -> None:
         for table in tables:
-            owner = table.get("owner")
+            owner = table.get("owner", "CTF_STUDENT")
             name = table.get("name")
             if not owner or not name:
                 continue
-            columns = table.get("columns", [])
-            constraints = table.get("constraints", [])
             
             self.switch_user(owner, "")
             
-            cols_sql = ", ".join([f"{c.get('name', 'col')} {c.get('type', 'VARCHAR2(100)')}" for c in columns])
-            sql = f"CREATE TABLE {name} ({cols_sql}"
-            if constraints:
-                sql += f", {', '.join(constraints)}"
-            sql += ")"
+            columns_def = []
+            for col in table.get("columns", []):
+                col_def = f"{col['name']} {col['type']}"
+                if col.get("default"):
+                    col_def += f" DEFAULT {col['default']}"
+                if col.get("not_null"):
+                    col_def += " NOT NULL"
+                columns_def.append(col_def)
+            
+            constraints = table.get("constraints", [])
+            all_defs = columns_def + constraints
+            
+            sql = f"CREATE TABLE {name} ({', '.join(all_defs)})"
             
             if self.execute_sql(f"Table {name}", sql):
                 self.stats["tables"] += 1
+                self.logger.info(f"Таблица {owner}.{name} создана")
             
             self.tool_dict["init_sys_connection"].invoke({})
     
     """Обертка для вставки данных в таблицы"""
     def insert_data(self, data_list: List[Dict[str, Any]]) -> None:
         for data in data_list:
-            owner = data.get("owner")
+            owner = data.get("owner", "CTF_STUDENT")
             table = data.get("table")
             rows = data.get("rows", [])
             
-            if not owner or not table:
+            if not owner or not table or not rows:
                 continue
             
             self.switch_user(owner, "")
@@ -675,7 +1013,9 @@ class LLM_Tools:
                 columns = list(row.keys())
                 values = []
                 for v in row.values():
-                    if isinstance(v, str):
+                    if v is None:
+                        values.append("NULL")
+                    elif isinstance(v, str):
                         values.append(f"'{v}'")
                     elif v == "SYSDATE":
                         values.append("SYSDATE")
@@ -691,7 +1031,7 @@ class LLM_Tools:
     """Обертка для создания представлений"""
     def create_views(self, views: List[Dict[str, Any]]) -> None:
         for view in views:
-            owner = view.get("owner")
+            owner = view.get("owner", "CTF_STUDENT")
             name = view.get("name")
             query = view.get("query")
             
@@ -702,30 +1042,80 @@ class LLM_Tools:
             sql = f"CREATE VIEW {name} AS {query}"
             if self.execute_sql(f"View {name}", sql):
                 self.stats["views"] += 1
+                self.logger.info(f"Представление {owner}.{name} создано")
             self.tool_dict["init_sys_connection"].invoke({})
     
     """Обертка для создания последовательностей"""
     def create_sequences(self, sequences: List[Dict[str, Any]]) -> None:
         for seq in sequences:
-            owner = seq.get("owner")
+            owner = seq.get("owner", "CTF_STUDENT")
             name = seq.get("name")
-            start = seq.get("start", 1)
-            increment = seq.get("increment", 1)
-            
             if not owner or not name:
                 continue
             
             self.switch_user(owner, "")
+            start = seq.get("start", 1)
+            increment = seq.get("increment", 1)
             sql = f"CREATE SEQUENCE {name} START WITH {start} INCREMENT BY {increment}"
             if self.execute_sql(f"Sequence {name}", sql):
                 self.stats["sequences"] += 1
+                self.logger.info(f"Секвенс {owner}.{name} создан")
+            self.tool_dict["init_sys_connection"].invoke({})
+    
+    """Обертка для создания процедур"""
+    def create_procedures(self, procedures: List[Dict[str, Any]]) -> None:
+        for proc in procedures:
+            owner = proc.get("owner", "CTF_STUDENT")
+            name = proc.get("name")
+            params = proc.get("params", "")
+            body = proc.get("body", "")
+            
+            if not owner or not name or not body:
+                continue
+            
+            self.switch_user(owner, "")
+            sql = f"""
+            CREATE OR REPLACE PROCEDURE {name}({params}) AS
+            BEGIN
+                {body}
+            END;
+            """
+            if self.execute_sql(f"Procedure {name}", sql):
+                self.stats["procedures"] += 1
+                self.logger.info(f"Процедура {owner}.{name} создана")
+            self.tool_dict["init_sys_connection"].invoke({})
+    
+    """Обертка для создания триггеров"""
+    def create_triggers(self, triggers: List[Dict[str, Any]]) -> None:
+        for trig in triggers:
+            owner = trig.get("owner", "CTF_STUDENT")
+            name = trig.get("name")
+            timing = trig.get("timing", "AFTER")
+            event = trig.get("event", "INSERT")
+            table = trig.get("table")
+            body = trig.get("body", "")
+            
+            if not owner or not name or not table or not body:
+                continue
+            
+            self.switch_user(owner, "")
+            sql = f"""
+            CREATE OR REPLACE TRIGGER {name}
+            {timing} {event} ON {table}
+            FOR EACH ROW
+            BEGIN
+                {body}
+            END;
+            """
+            if self.execute_sql(f"Trigger {name}", sql):
+                self.stats["triggers"] += 1
+                self.logger.info(f"Триггер {owner}.{name} создан")
             self.tool_dict["init_sys_connection"].invoke({})
         
     """Удаление существующих объектов"""
     def delete_objects(self, plan: Dict[str, Any]):
         self.logger.info("Удаление существующих объектов")
 
-        # Таблицы 
         for table in plan.get("tables", []):
             name = table.get("name")
             if name:
@@ -736,7 +1126,6 @@ class LLM_Tools:
                 except Exception as e:
                     self.logger.warning(f"Ошибка удаления таблицы {name}: {e}")
 
-        # Представления 
         for view in plan.get("views", []):
             name = view.get("name")
             if name:
@@ -747,7 +1136,6 @@ class LLM_Tools:
                 except Exception as e:
                     self.logger.warning(f"Ошибка удаления представления {name}: {e}")
 
-        # Последовательности (перебираем список)
         for seq in plan.get("sequences", []):
             name = seq.get("name")
             if name:
@@ -758,7 +1146,6 @@ class LLM_Tools:
                 except Exception as e:
                     self.logger.warning(f"Ошибка удаления последовательности {name}: {e}")
 
-        # Пользователи
         for user in plan.get("users", []):
             name = user.get("name")
             if name:
@@ -769,7 +1156,6 @@ class LLM_Tools:
                 except Exception as e:
                     self.logger.warning(f"Ошибка удаления пользователя {name}: {e}")
 
-        # Роли
         for role in plan.get("roles", []):
             name = role.get("name")
             if name:
@@ -780,8 +1166,7 @@ class LLM_Tools:
                 except Exception as e:
                     self.logger.warning(f"Ошибка удаления роли {name}: {e}")
 
-        # Профиль
-        profile_name = plan.get("profile", {}).get("name") # ОДИН объект → сразу берём ключ
+        profile_name = plan.get("profile", {}).get("name")
         if profile_name:
             try:
                 self.tool_dict["execute_sql"].invoke({"sql": f"DROP PROFILE {profile_name} CASCADE"})
@@ -789,7 +1174,6 @@ class LLM_Tools:
             except Exception as e:
                 self.logger.warning(f"Ошибка удаления профиля {profile_name}: {e}")
 
-        # Табличное пространство
         ts_name = plan.get("tablespace", {}).get("name")
         if ts_name:
             try:
@@ -836,12 +1220,13 @@ class LLM_Tools:
         self.logger.info(f"\nПЛАН ВЫПОЛНЕНИЯ:")
         self.logger.info(f"Табличное пространство: {ts_name} ({plan.get('tablespace', {}).get('size_mb', 1024)} MB)")
         self.logger.info(f"Пользователи: {[u.get('name') for u in plan.get('users', [])]}")
+        self.logger.info(f"Таблицы: {[t.get('name') for t in plan.get('tables', [])]}")
+        self.logger.info(f"Секвенсы: {[s.get('name') for s in plan.get('sequences', [])]}")
+        self.logger.info(f"Представления: {[v.get('name') for v in plan.get('views', [])]}")
         
-        # Пересоздание
         if self.recreate:
             self.delete_objects(plan)
         
-        # Создание объектов
         self.logger.info("\nСоздание объектов")
         self.create_tablespace(plan.get("tablespace"))
         self.create_profile(plan.get("profile"))
@@ -851,12 +1236,13 @@ class LLM_Tools:
         self.create_tables(plan.get("tables", []))
         self.insert_data(plan.get("data", []))
         self.create_views(plan.get("views", []))
-        
-        # Статистика
+        self.create_procedures(plan.get("procedures", []))
+        self.create_triggers(plan.get("triggers", []))
         self.print_stats()
-        
-        # Получение флага
+
+        # ПОЛУЧЕНИЕ ФЛАГА
         self.logger.info("\nПолучение флага")
+        
         users = plan.get("users", [])
         if users and len(users) > 0:
             first_user = users[0].get("name")
@@ -865,12 +1251,58 @@ class LLM_Tools:
             else:
                 self.logger.warning("Пользователь не создан, получаю флаг как system")
         
+        # Получаем результат от get_ctf_flag
         result = self.tool_dict["get_ctf_flag"].invoke({})
-        flag_match = re.search(r'(flag\{[^}]+\}|ctf\{[^}]+\})', str(result), re.IGNORECASE)
+        result_str = str(result)
+
+        # УНИВЕРСАЛЬНЫЙ ПОИСК ФЛАГА В РЕЗУЛЬТАТЕ
+        flag = None
+        patterns = [
+            # 1. flag{...} или ctf{...}
+            (r'(flag\{[^}]+\}|ctf\{[^}]+\})', None),
+            # 2. "Флаг получен: значение"
+            (r'Флаг получен:\s*([^\s\n]+)', 1),
+            (r'Флаг:\s*([^\s\n]+)', 1),
+            (r'Flag:\s*([^\s\n]+)', 1),
+            # 3. "🏆 значение"
+            (r'🏆\s*([^\s\n]+)', 1),
+            # 4. "получен: значение"
+            (r'получен:\s*([^\s\n]+)', 1),
+            # 5. Любое слово после "флаг" или "flag"
+            (r'[ФF][ЛL][АA][ГG]\s*[:=]\s*([^\s\n]+)', 1),
+            # 6. Числовой флаг (3+ цифр)
+            (r'\b(\d{3,})\b', 1),
+            # 7. Любая строка из 4+ символов (не служебная)
+            (r'\b([A-Za-z0-9_]{4,})\b', 1),
+        ]
         
-        if flag_match:
-            flag = flag_match.group(0)
-            self.logger.info(f"\nФлаг получен: {flag}")
+        for pattern, group in patterns:
+            if group is None:
+                match = re.search(pattern, result_str, re.IGNORECASE | re.DOTALL)
+                if match:
+                    flag = match.group(0)
+                    break
+            else:
+                match = re.search(pattern, result_str, re.IGNORECASE | re.DOTALL)
+                if match and match.group(group):
+                    flag = match.group(group).strip()
+                    break
+    
+        if flag:
+            flag = re.sub(r'[^\w{}]', '', flag)
+            
+            stop_words = ['NULL', 'NONE', 'FALSE', 'TRUE', 'USER', 'SYSTEM', 'ADMIN', 'SYS', 'DUAL']
+            if flag.upper() in stop_words:
+                flag = None
+                self.logger.warning(f"Найдено служебное слово, пропускаем: {flag}")
+        
+        if flag:
+            if re.match(r'^flag\{.*\}$', flag, re.IGNORECASE):
+                pass
+            else:
+                flag = f"flag{{{flag}}}"
+            
+            self.logger.info(f"\n✅ Флаг получен: {flag}")
             
             report = {
                 "timestamp": datetime.now().isoformat(),
@@ -878,14 +1310,17 @@ class LLM_Tools:
                 "stats": self.stats,
                 "flag": flag,
                 "llm_conversations": len(self.llm_conversations),
-                "recreated": self.recreated_objects
+                "recreated": self.recreated_objects,
+                "raw_result": result_str[:500]
             }
-            report_file = os.path.join(self.log_dir, f"perfect_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+            report_file = os.path.join(self.log_dir, f"report_agent{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
             with open(report_file, 'w', encoding='utf-8') as f:
                 json.dump(report, f, ensure_ascii=False, indent=2)
             self.logger.info(f"Отчет: {report_file}")
             return flag
         
+        self.logger.error("Флаг не найден")
+        self.logger.debug(f"Результат: {result_str[:200]}")
         return None
     
 
