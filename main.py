@@ -1407,7 +1407,7 @@ class LLM_Tools:
             else:
                 flag = f"flag{{{flag}}}"
             
-            self.logger.info(f"\n✅ Флаг получен: {flag}")
+            self.logger.info(f"\nФлаг получен: {flag}")
             
             report = {
                 "timestamp": datetime.now().isoformat(),
