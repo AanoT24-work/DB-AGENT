@@ -15,6 +15,99 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ============================================================
+# 🧠 ПОЛНЫЙ ПРОМПТ С ПРАВИЛЬНЫМИ КОМАНДАМИ ORACLE
+# ============================================================
+ORACLE_COMMANDS = """
+Ты эксперт по Oracle Database. Используй ТОЛЬКО эти команды и параметры:
+
+================================================================================
+1. ТАБЛИЧНОЕ ПРОСТРАНСТВО (TABLESPACE)
+================================================================================
+CREATE TABLESPACE name DATAFILE 'file.dbf' SIZE 560M AUTOEXTEND ON NEXT 10M MAXSIZE 1024M;
+
+================================================================================
+2. ПРОФИЛЬ (PROFILE) - ТОЛЬКО ЭТИ ПАРАМЕТРЫ!
+================================================================================
+CREATE PROFILE name LIMIT
+    SESSIONS_PER_USER 2              -- количество одновременных сессий
+    IDLE_TIME 20                     -- время простоя в МИНУТАХ
+    LOGICAL_READS_PER_SESSION 11000  -- лимит логических чтений
+    CPU_PER_SESSION 32000            -- лимит CPU на сессию
+    FAILED_LOGIN_ATTEMPTS 3          -- неудачные попытки входа
+    PASSWORD_LOCK_TIME 1;            -- блокировка в ДНЯХ
+
+НЕ ИСПОЛЬЗУЙ: SESSION_TIMEOUT, LOGICAL_READS_PER_CALL, ACCOUNT_LOCK_TIME, LOCKED_TIME
+
+================================================================================
+3. РОЛЬ (ROLE) - С ПАРОЛЕМ
+================================================================================
+CREATE ROLE role_name IDENTIFIED BY password;
+
+================================================================================
+4. ПОЛЬЗОВАТЕЛЬ (USER)
+================================================================================
+CREATE USER username
+IDENTIFIED BY password
+DEFAULT TABLESPACE tablespace
+TEMPORARY TABLESPACE TEMP
+QUOTA 280M ON tablespace
+PROFILE profile_name
+ACCOUNT UNLOCK;
+
+================================================================================
+5. ПРИВИЛЕГИИ (PRIVILEGES)
+================================================================================
+GRANT CREATE SESSION TO username;
+GRANT role_name TO username;
+ALTER USER username DEFAULT ROLE NONE;  -- роль НЕ по умолчанию
+
+================================================================================
+6. ПРАВА ЧЕРЕЗ РОЛЬ (а не напрямую пользователю!)
+================================================================================
+GRANT SELECT ON schema.table_name TO role_name;
+
+================================================================================
+7. АКТИВАЦИЯ РОЛИ
+================================================================================
+SET ROLE role_name IDENTIFIED BY password;
+
+================================================================================
+8. ПОЛУЧЕНИЕ ФЛАГА
+================================================================================
+SELECT flag_value FROM CTF.CTF_FLAG;
+
+================================================================================
+9. ДРУГИЕ ПОЛЕЗНЫЕ КОМАНДЫ
+================================================================================
+-- Разблокировка пользователя
+ALTER USER username ACCOUNT UNLOCK;
+
+-- Проверка существования
+SELECT COUNT(*) FROM dba_tablespaces WHERE tablespace_name = 'NAME';
+SELECT COUNT(*) FROM dba_users WHERE username = 'NAME';
+SELECT COUNT(*) FROM dba_roles WHERE role = 'NAME';
+SELECT COUNT(*) FROM dba_profiles WHERE profile = 'NAME';
+
+-- Просмотр таблиц
+SELECT table_name FROM all_tables WHERE owner = 'SCHEMA';
+
+-- Просмотр структуры
+SELECT column_name, data_type FROM all_tab_columns WHERE table_name = 'TABLE_NAME';
+
+-- Текущий пользователь
+SELECT USER FROM DUAL;
+
+================================================================================
+ВАЖНО!
+- Параметры профиля: SESSIONS_PER_USER, IDLE_TIME, LOGICAL_READS_PER_SESSION, CPU_PER_SESSION, FAILED_LOGIN_ATTEMPTS, PASSWORD_LOCK_TIME
+- Роль создается с паролем: CREATE ROLE name IDENTIFIED BY password
+- Права выдаются РОЛИ, а не пользователю: GRANT SELECT ON CTF.CTF_FLAG TO CTF_ROLE
+- Роль не должна быть по умолчанию: ALTER USER CTF_STUDENT DEFAULT ROLE NONE
+- Для получения флага: SET ROLE CTF_ROLE IDENTIFIED BY ctf_role; SELECT flag_value FROM CTF.CTF_FLAG;
+================================================================================
+"""
+
 """Класс для работы с инициализацией, подключением и сменой аккаунтов для всех необходимых ресурсов"""
 class Init:
     def __init__(self):
@@ -658,7 +751,7 @@ class LLM_Tools:
             start_time = time.time()
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
-                json={"model": os.getenv("OLLAMA_MODEL"), "prompt": prompt, "stream": False, "options": {"temperature": 0, "num_predict": 2048}},
+                json={"model": os.getenv("OLLAMA_MODEL"), "prompt": prompt, "stream": False, "options": {"temperature": 0, "num_predict": 4096}},
                 timeout=self.timeout
             )
             elapsed = time.time() - start_time
@@ -721,17 +814,44 @@ class LLM_Tools:
 
     """Расширенный парсинг задания с поддержкой всех объектов"""
     def parse_task(self, task_description: str) -> Optional[Dict[str, Any]]:
-        prompt = f"""Ты эксперт по Oracle Database. Проанализируй задание и верни JSON план.
+        # Добавляем команды Oracle в промпт
+        prompt = f"""{ORACLE_COMMANDS}
 
-    Задание: {task_description[:3000]}
+    Теперь проанализируй задание и верни JSON план.
+
+    Задание: {task_description}
 
     Верни JSON:
     {{
-        "tablespace": {{"name": "NAME", "size_mb": 1024, "autoextend_max_mb": 5120}},
-        "profile": {{"name": "NAME", "params": {{"SESSIONS_PER_USER": 10, "IDLE_TIME": 15}}}},
-        "roles": [{{"name": "ROLE1"}}, {{"name": "ROLE2"}}],
+        "tablespace": {{
+            "name": "CTF_TABLESPACE",
+            "size_mb": 560,
+            "autoextend_max_mb": 1024
+        }},
+        "profile": {{
+            "name": "CTF_PROFILE",
+            "params": {{
+                "SESSIONS_PER_USER": 2,
+                "IDLE_TIME": 20,
+                "LOGICAL_READS_PER_SESSION": 11000,
+                "CPU_PER_SESSION": 32000,
+                "FAILED_LOGIN_ATTEMPTS": 3,
+                "PASSWORD_LOCK_TIME": 1
+            }}
+        }},
+        "roles": [
+            {{"name": "CTF_ROLE", "password": "ctf_role"}}
+        ],
         "users": [
-            {{"name": "USER1", "password": "pass1", "quota_mb": 100, "profile": "PROFILE", "privileges": ["CREATE SESSION"]}}
+            {{
+                "name": "CTF_STUDENT",
+                "password": "ctf_student",
+                "quota_mb": 280,
+                "profile": "CTF_PROFILE",
+                "temporary_tablespace": "TEMP",
+                "default_role": "NONE",
+                "privileges": ["CREATE SESSION"]
+            }}
         ],
         "tables": [],
         "data": [],
@@ -743,40 +863,6 @@ class LLM_Tools:
 
     Ответь ТОЛЬКО JSON."""
 
-        if len(task_description) > 1000:
-            parts = []
-            for i in range(0, len(task_description), 750):
-                chunk = task_description[i:i+750]
-                response = self.ask_llm(
-                    f"Извлеки суть из части задания: {chunk}", 
-                    "chunk_analysis"
-                )
-                parts.append(response)
-            
-            compressed_task = "\n".join(parts)
-            
-            prompt = f"""Ты эксперт по Oracle Database. Проанализируй задание и верни JSON план.
-
-    Задание (сжато): {compressed_task}
-
-    Верни JSON:
-    {{
-        "tablespace": {{"name": "NAME", "size_mb": "РАЗМЕР_ИЗ_ЗАДАНИЯ", "autoextend_max_mb": "МАКС_РАЗМЕР_ИЗ_ЗАДАНИЯ"}},
-        "profile": {{"name": "NAME", "params": {{"SESSIONS_PER_USER": 10, "IDLE_TIME": 15}}}},
-        "roles": [{{"name": "ROLE1"}}, {{"name": "ROLE2"}}],
-        "users": [
-            {{"name": "USER1", "password": "pass1", "quota_mb": 100, "profile": "PROFILE", "privileges": ["CREATE SESSION"]}}
-        ],
-        "tables": [],
-        "data": [],
-        "views": [],
-        "procedures": [],
-        "triggers": [],
-        "sequences": []
-    }}
-
-    Ответь ТОЛЬКО JSON."""
-        
         self.logger.info("Анализ задания...")
         response = self.ask_llm(prompt, "task_analysis")
         
@@ -784,8 +870,6 @@ class LLM_Tools:
             json_match = re.search(r'\{.*\}', response, re.DOTALL) 
             if json_match:
                 plan = json.loads(json_match.group())
-                # Дополнительный парсинг таблиц, секвенс и т.д.
-                plan = self._parse_additional_objects(task_description, plan)
                 return plan
         except Exception as e:
             self.logger.error(f"Ошибка парсинга JSON: {e}")
@@ -932,8 +1016,19 @@ class LLM_Tools:
         if not config:
             return
         name = config.get("name", "MEGA_PROFILE")
-        params = config.get("params", {"SESSIONS_PER_USER": 50, "IDLE_TIME": 120})
-        params_str = " ".join([f"{k} {v}" for k, v in params.items()])
+        params = config.get("params", {})
+        
+        # Принудительно правильные параметры для Oracle
+        oracle_params = {
+            "SESSIONS_PER_USER": params.get("SESSIONS_PER_USER", 2),
+            "IDLE_TIME": params.get("IDLE_TIME", 20),
+            "LOGICAL_READS_PER_SESSION": params.get("LOGICAL_READS_PER_SESSION", 11000),
+            "CPU_PER_SESSION": params.get("CPU_PER_SESSION", 32000),
+            "FAILED_LOGIN_ATTEMPTS": params.get("FAILED_LOGIN_ATTEMPTS", 3),
+            "PASSWORD_LOCK_TIME": params.get("PASSWORD_LOCK_TIME", 1)
+        }
+        
+        params_str = " ".join([f"{k} {v}" for k, v in oracle_params.items()])
         sql = f"CREATE PROFILE {name} LIMIT {params_str}"
         if self.execute_sql(f"Profile {name}", sql):
             self.stats["profiles"] += 1
@@ -942,8 +1037,12 @@ class LLM_Tools:
     def create_roles(self, roles: List[Dict[str, Any]]) -> None:
         for role in roles:
             name = role.get("name")
+            password = role.get("password")
             if name:
-                sql = f"CREATE ROLE {name}"
+                if password:
+                    sql = f"CREATE ROLE {name} IDENTIFIED BY {password}"
+                else:
+                    sql = f"CREATE ROLE {name}"
                 if self.execute_sql(f"Role {name}", sql):
                     self.stats["roles"] += 1
     
@@ -956,7 +1055,9 @@ class LLM_Tools:
             password = user.get("password", f"{name.lower()}_pass")
             quota = user.get("quota_mb", 100)
             profile = user.get("profile", "MEGA_PROFILE")
-            sql = f"CREATE USER {name} IDENTIFIED BY {password} DEFAULT TABLESPACE {ts_name} QUOTA {quota}M ON {ts_name} PROFILE {profile}"
+            temp_ts = user.get("temporary_tablespace", "TEMP")
+            
+            sql = f"CREATE USER {name} IDENTIFIED BY {password} DEFAULT TABLESPACE {ts_name} TEMPORARY TABLESPACE {temp_ts} QUOTA {quota}M ON {ts_name} PROFILE {profile}"
             if self.execute_sql(f"User {name}", sql):
                 self.stats["users"] += 1
                 for priv in user.get("privileges", ["CREATE SESSION"]):
@@ -966,6 +1067,10 @@ class LLM_Tools:
                     role_name = role.get("name")
                     if role_name:
                         self.execute_sql(f"Grant role to {name}", f"GRANT {role_name} TO {name}")
+                
+                # Установка DEFAULT ROLE NONE если указано
+                if user.get("default_role") == "NONE":
+                    self.execute_sql(f"Default role NONE for {name}", f"ALTER USER {name} DEFAULT ROLE NONE")
     
     """Обертка для создания таблиц"""
     def create_tables(self, tables: List[Dict[str, Any]]) -> None:
